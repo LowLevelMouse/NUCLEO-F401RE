@@ -64,7 +64,11 @@
 #define DEBOUNCE_MS 20U // Raw button state must stay unchanged this long before being accepted.
 volatile unsigned int GlobalMilliseconds = 0;
 
-static void UserButtonAndLD2_Init()
+void I2C1_Init();
+void I2C1_Scan();
+
+
+static void UserButtonAndLD2_Init(void)
 {
 	//Enable clock for GPIOA and GPIOC peripherals
 	RCC_AHB1ENR |= GPIOAEN | GPIOCEN;
@@ -81,7 +85,7 @@ static void UserButtonAndLD2_Init()
 	GPIOC_PUPDR &= PUPDR13CLEAR;
 }
 
-static void USART2_Init()
+static void USART2_Init(void)
 {
 	//This function assumes GPIOA clock is already enabled
 	//PA2 and PA3 are the pins for USART2 PA2 is TX (Transmit) PA3 is RX (Receive)
@@ -122,7 +126,7 @@ static void USART2_WriteChar(char c)
 	USART2_DR = (unsigned int)c;
 }
 
-static void USART2_WriteString(const char* String)
+void USART2_WriteString(const char* String)
 {
 	while(*String)
 	{
@@ -131,13 +135,37 @@ static void USART2_WriteString(const char* String)
 	}
 }
 
+static void UART_WrtieHexNibble(unsigned int Value)
+{
+	//Get low 4 bits
+	Value &= 0xFU;
+
+	if(Value < 10U)
+	{
+		USART2_WriteChar('0' + Value); // 0 - 9
+	}
+	else
+	{
+		USART2_WriteChar('A' + (Value - 10U)); // A - F
+	}
+
+}
+
+//A Byte needs to be passed in here
+void UART_WriteHexByte(unsigned int Value)
+{
+	UART_WrtieHexNibble(Value >> 4);
+	UART_WrtieHexNibble(Value);
+}
+
+
 //SysTick calls us here
-void SysTick_Handler()
+void SysTick_Handler(void)
 {
 	GlobalMilliseconds++;
 }
 
-static void SysTick_Init_1ms()
+static void SysTick_Init_1ms(void)
 {
 	STK_LOAD = (CPU_CLOCK_HZ / SYSTICK_HZ) - 1U;  // How many cpu ticks for one interrupt
 	STK_VAL = 0U; //Reset current value
@@ -153,6 +181,9 @@ int main(void)
 	USART2_Init();
 
 	USART2_WriteString("STM32 USART booted \r\n");
+
+	I2C1_Init();
+	I2C1_Scan();
 
 	unsigned int ButtonLastChangeMs = 0;
 	unsigned int ButtonRawPrev = 0;
