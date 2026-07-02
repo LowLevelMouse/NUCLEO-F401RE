@@ -65,7 +65,8 @@
 volatile unsigned int GlobalMilliseconds = 0;
 
 void I2C1_Init();
-void I2C1_Scan();
+unsigned int I2C1_Scan();
+unsigned int I2C1_ReadRegisterByte(unsigned int DeviceAddress, unsigned int RegisterAddress);
 
 
 static void UserButtonAndLD2_Init(void)
@@ -183,7 +184,13 @@ int main(void)
 	USART2_WriteString("STM32 USART booted \r\n");
 
 	I2C1_Init();
-	I2C1_Scan();
+	unsigned int Address = I2C1_Scan();
+
+	unsigned int ChipID = I2C1_ReadRegisterByte(Address, 0xD0U);
+
+	USART2_WriteString("BME280 chip ID: 0x");
+	UART_WriteHexByte(ChipID);
+	USART2_WriteString("\r\n");
 
 	unsigned int ButtonLastChangeMs = 0;
 	unsigned int ButtonRawPrev = 0;

@@ -56,6 +56,7 @@
 #define I2C_CR1_PE (1U << 0)
 #define I2C_CR1_START (1U << 8)
 #define I2C_CR1_STOP (1U << 9)
+#define I2C_CR1_ACK (1U << 10)
 #define I2C_CR1_SWRST (1U << 15)
 
 #define I2C_SR1_SB (1U << 0)
@@ -115,6 +116,20 @@ void I2C1_Init(void)
 
 }
 
+//We need the register passed in as a pointer because the register will change during this check
+//if it somehow didn't already before the call
+static int I2C1_WaitForSet(volatile unsigned int* Register, unsigned int Flag)
+{
+	unsigned int Timeout = 100000U;
+
+	while(((*Register & Flag) == 0U) && Timeout)
+	{
+		Timeout --;
+	}
+
+	return Timeout != 0U;
+
+}
 static int I2C1_AddressResponds(unsigned int Address)
 {
 	volatile unsigned int Temp;
@@ -176,9 +191,94 @@ static int I2C1_AddressResponds(unsigned int Address)
 	return 0;
 }
 
-void I2C1_Scan(void)
+unsigned int I2C1_ReadRegisterByte(unsigned int DeviceAddress, unsigned int RegisterAddress)
+{
+	volatile unsigned int Temp;
+	unsigned int Value;
+
+	//This is how we begin a serial data transfer. It causes the I2C interface to enter
+	//controller mode in which it initiates a data transfer and generates the clock signal
+	//The controller is now waiting for a read of the SR1 register followed by a write in the
+	//DR register with the target address
+	I2C1_CR1 |= I2C_CR1_START;
+
+	//Wait for the START bit to be set
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_SB))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	//Write to the data register with the address of our target
+	//The LSB set to 0 means we enter Transmitter mode (we want to send data over)
+	I2C1_DR = DeviceAddress << 1;
+
+	//Wait for the address to be sent to the SDA line as soon as it's sent the ADDR bit is set
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_ADDR))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	Temp = I2C1_SR1;
+	Temp = I2C1_SR2;
+	(void)Temp;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_TXE))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	I2C1_DR = RegisterAddress;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_BTF))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	I2C1_CR1 |= I2C_CR1_START;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_SB))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	I2C1_DR = (DeviceAddress << 1) | 1U;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_ADDR))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0U;
+	}
+
+	I2C1_CR1 &= ~I2C_CR1_ACK;
+	Temp = I2C1_SR1;
+	Temp = I2C1_SR2;
+	(void)Temp;
+
+	I2C1_CR1 |= I2C_CR1_STOP;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_RXNE))
+	{
+		I2C1_CR1 |= I2C_CR1_ACK;
+		return 0U;
+	}
+
+	Value = I2C1_DR & 0xFFU;
+
+	I2C1_CR1 |= I2C_CR1_ACK;
+
+	return Value;
+
+}
+
+unsigned int I2C1_Scan(void)
 {
 	unsigned int Address;
+	unsigned int SaveAddress;
 	unsigned int FoundCount = 0U;
 
 	USART2_WriteString("I2C scan starting....\r\n");
@@ -190,6 +290,8 @@ void I2C1_Scan(void)
 			USART2_WriteString("Found I2C device at 0x");
 			UART_WriteHexByte(Address);
 			USART2_WriteString("\r\n");
+
+			SaveAddress = Address;
 
 			FoundCount ++;
 		}
@@ -203,6 +305,8 @@ void I2C1_Scan(void)
 	{
 		USART2_WriteString("I2C scan done.\r\n");
 	}
+
+	return SaveAddress;
 }
 
 
