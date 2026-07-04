@@ -62,11 +62,23 @@
 #define SYSTICK_HZ 1000U //How many times a second should we interrupt
 
 #define DEBOUNCE_MS 20U // Raw button state must stay unchanged this long before being accepted.
+
+#define BME280_CTRL_MEAS 0xF4U
+#define BME280_STATUS 0xF3U
+#define BME280_TEMP_MSB 0xFAU
+#define BME280_TEMP_LSB 0xFBU
+#define BME280_TEMP_XLSB 0xFCU
+
+
+#define BME280_FORCEDMODE_TEMPOVERSAMPLE1X 0x21U
+#define BME280_STATUS_MEASURING (1U << 3)
+
 volatile unsigned int GlobalMilliseconds = 0;
 
 void I2C1_Init();
 unsigned int I2C1_Scan();
 unsigned int I2C1_ReadRegisterByte(unsigned int DeviceAddress, unsigned int RegisterAddress);
+int I2C1_WriteRegisterByte(unsigned int DeviceAddress, unsigned int RegisterAddress, unsigned int Value);
 
 
 static void UserButtonAndLD2_Init(void)
@@ -152,6 +164,56 @@ static void UART_WrtieHexNibble(unsigned int Value)
 
 }
 
+static void UART_WriteUnsignedDecimal(unsigned int Value)
+{
+	char Buffer[32];
+	unsigned int Count = 0U;
+
+	if(Value == 0U)
+	{
+		USART2_WriteString("0");
+		return;
+	}
+
+	while(Value > 0U)
+	{
+		Buffer[Count] = '0' + (Value % 10);
+		Value /= 10U;
+		Count++;
+	}
+
+	while(Count > 0U)
+	{
+		char Out[2];
+
+		Count --;
+
+		Out[0] = Buffer[Count];
+		Out[1] = '\0';
+
+		USART2_WriteString(Out);
+	}
+}
+
+static void UART_WriteSignedCentiCelcius(int TemperatureCentiC)
+{
+	unsigned int PositiveValue;
+
+	if(TemperatureCenitC < 0)
+	{
+		USART2_WriteString("-");
+		TemperatureCentiC = -TemperatureCentiC;
+	}
+
+	PositiveValue = (unsigned int)TemperatureCentiC;
+
+	USART_WriteUnsginedDecimal(PositiveValue / 100U);
+	USART2_WriteString(".");
+	USART_WriteUnsignedDecimal(PostiiveValue % 100U);
+
+
+}
+
 //A Byte needs to be passed in here
 void UART_WriteHexByte(unsigned int Value)
 {
@@ -184,13 +246,45 @@ int main(void)
 	USART2_WriteString("STM32 USART booted \r\n");
 
 	I2C1_Init();
-	unsigned int Address = I2C1_Scan();
+	unsigned int DeviceAddress = I2C1_Scan();
 
-	unsigned int ChipID = I2C1_ReadRegisterByte(Address, 0xD0U);
+	unsigned int ChipID = I2C1_ReadRegisterByte(DeviceAddress, 0xD0U);
 
 	USART2_WriteString("BME280 chip ID: 0x");
 	UART_WriteHexByte(ChipID);
 	USART2_WriteString("\r\n");
+
+	unsigned int Status;
+	unsigned int TempMSB;
+	unsigned int TempLSB;
+	unsigned int TempXLSB;
+	unsigned int RawTemperature;
+
+	if(I2C1_WriteRegisterByte(DeviceAddress, BME280_CTRL_MEAS, BME280_FORCEDMODE_TEMPOVERSAMPLE1X))
+	{
+		USART2_WriteString("Temp measurement started\r\n");
+		do
+		{
+			Status = I2C1_ReadRegisterByte(DeviceAddress, BME280_STATUS);
+
+		}
+		while(Status & BME280_STATUS_MEASURING);
+
+		TempMSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_MSB);
+		TempLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_LSB);
+		TempXLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_XLSB);
+
+		//MSB[19:12] LSB[11:4] XLSB[3:0](bit 7, 6, 5, 4)
+		RawTemperature = (TempMSB << 12) | (TempLSB << 4) | (TempXLSB >> 4);
+
+		USART2_WriteString("Raw Temperature bytes 0x");
+		UART_WriteHexByte(TempMSB);
+		UART_WriteHexByte(TempLSB);
+		UART_WriteHexByte(TempXLSB);
+		USART2_WriteString("\r\n");
+	}
+	else
+		USART2_WriteString("Temp measurement failed to start\r\n");
 
 	unsigned int ButtonLastChangeMs = 0;
 	unsigned int ButtonRawPrev = 0;

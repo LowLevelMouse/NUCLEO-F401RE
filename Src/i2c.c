@@ -275,6 +275,62 @@ unsigned int I2C1_ReadRegisterByte(unsigned int DeviceAddress, unsigned int Regi
 
 }
 
+int I2C1_WriteRegisterByte(unsigned int DeviceAddress, unsigned int RegisterAddress, unsigned int Value)
+{
+	volatile unsigned int Temp;
+
+	I2C1_CR1 |= I2C_CR1_START;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_SB))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0;
+	}
+
+	//Transmitter mode
+	I2C1_DR = DeviceAddress << 1;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_ADDR))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0;
+	}
+
+	Temp = I2C1_SR1;
+	Temp = I2C1_SR2;
+	(void)Temp;
+
+	//Docs state to do this TXE here
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_TXE))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0;
+	}
+
+	//Lets send over the register we want to write to
+	I2C1_DR = RegisterAddress;
+
+	//Wait for the register address to be sent
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_TXE))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0;
+	}
+
+	I2C1_DR = Value;
+
+	if(!I2C1_WaitForSet(&I2C1_SR1, I2C_SR1_BTF))
+	{
+		I2C1_CR1 |= I2C_CR1_STOP;
+		return 0;
+	}
+
+	I2C1_CR1 |= I2C_CR1_STOP;
+
+	return 1;
+
+}
+
 unsigned int I2C1_Scan(void)
 {
 	unsigned int Address;
