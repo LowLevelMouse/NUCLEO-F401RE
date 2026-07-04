@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #define RCC_BASE 0x40023800UL //Reset and Clock Control Base Address
 #define GPIOA_BASE 0x40020000UL //GPIO Port A Base Address
 #define GPIOC_BASE 0x40020800UL //GPIO Port C Base Address
@@ -69,6 +71,12 @@
 #define BME280_TEMP_LSB 0xFBU
 #define BME280_TEMP_XLSB 0xFCU
 
+#define BME280_DIG_T1_LSB 0x88U
+#define BME280_DIG_T1_MSB 0x89U
+#define BME280_DIG_T2_LSB 0x8AU
+#define BME280_DIG_T2_MSB 0x8BU
+#define BME280_DIG_T3_LSB 0x8CU
+#define BME280_DIG_T3_MSB 0x8DU
 
 #define BME280_FORCEDMODE_TEMPOVERSAMPLE1X 0x21U
 #define BME280_STATUS_MEASURING (1U << 3)
@@ -148,7 +156,7 @@ void USART2_WriteString(const char* String)
 	}
 }
 
-static void UART_WrtieHexNibble(unsigned int Value)
+static void UART_WriteHexNibble(unsigned int Value)
 {
 	//Get low 4 bits
 	Value &= 0xFU;
@@ -195,11 +203,11 @@ static void UART_WriteUnsignedDecimal(unsigned int Value)
 	}
 }
 
-static void UART_WriteSignedCentiCelcius(int TemperatureCentiC)
+static void UART_WriteSignedCentiCelsius(int TemperatureCentiC)
 {
 	unsigned int PositiveValue;
 
-	if(TemperatureCenitC < 0)
+	if(TemperatureCentiC < 0)
 	{
 		USART2_WriteString("-");
 		TemperatureCentiC = -TemperatureCentiC;
@@ -207,9 +215,14 @@ static void UART_WriteSignedCentiCelcius(int TemperatureCentiC)
 
 	PositiveValue = (unsigned int)TemperatureCentiC;
 
-	USART_WriteUnsginedDecimal(PositiveValue / 100U);
+	UART_WriteUnsignedDecimal(PositiveValue / 100U);
 	USART2_WriteString(".");
-	USART_WriteUnsignedDecimal(PostiiveValue % 100U);
+	unsigned int DecimalPart = PositiveValue % 100U;
+	if(DecimalPart < 10U)
+	{
+		USART2_WriteString("0");
+	}
+	UART_WriteUnsignedDecimal(DecimalPart);
 
 
 }
@@ -217,8 +230,8 @@ static void UART_WriteSignedCentiCelcius(int TemperatureCentiC)
 //A Byte needs to be passed in here
 void UART_WriteHexByte(unsigned int Value)
 {
-	UART_WrtieHexNibble(Value >> 4);
-	UART_WrtieHexNibble(Value);
+	UART_WriteHexNibble(Value >> 4);
+	UART_WriteHexNibble(Value);
 }
 
 
@@ -234,6 +247,97 @@ static void SysTick_Init_1ms(void)
 	STK_VAL = 0U; //Reset current value
 	STK_CTRL = SYST_CSR_ENABLE | SYST_CSR_TICKINT | SYST_CSR_CLKSOURCE; // Enable SysTick counter, enable SysTick interrupt, use processor clock
 
+}
+
+//BOSCH PROVIDED COMPENSATION CODE (slighty modified)
+// Returns temperature in DegC, resolution is 0.01 DegC. Output value of “5123” equals 51.23
+//DegC. t_fine carries fine temperature as global value
+
+//int32_t t_fine; We need a global t_fine for when we do pressure/humidity
+
+int32_t BME280_compensate_T_int32(int32_t RawTemperature, uint16_t DigT1, int16_t DigT2, int16_t DigT3)
+{
+	int32_t var1, var2, t_fine, T;
+	var1 = ((((RawTemperature>>3) - ((int32_t)DigT1<<1))) * ((int32_t)DigT2)) >> 11;
+	var2 = (((((RawTemperature>>4) - ((int32_t)DigT1)) * ((RawTemperature>>4) - ((int32_t)DigT1)))
+	>> 12) *
+	((int32_t)DigT3)) >> 14;
+	t_fine = var1 + var2;
+	T = (t_fine * 5 + 128) >> 8;
+	return T;
+}
+
+static int BME280_ReadTemperatureCentiC(unsigned int DeviceAddress, int32_t* TemperatureCentiC)
+{
+
+		unsigned int Status;
+		unsigned int TempMSB;
+		unsigned int TempLSB;
+		unsigned int TempXLSB;
+		unsigned int RawTemperature;
+
+		unsigned int DigT1_LSB;
+		unsigned int DigT1_MSB;
+		unsigned int DigT2_LSB;
+		unsigned int DigT2_MSB;
+		unsigned int DigT3_LSB;
+		unsigned int DigT3_MSB;
+
+		unsigned short DigT1;
+		short DigT2;
+		short DigT3;
+
+		if(I2C1_WriteRegisterByte(DeviceAddress, BME280_CTRL_MEAS, BME280_FORCEDMODE_TEMPOVERSAMPLE1X))
+		{
+			USART2_WriteString("Temp measurement started\r\n");
+
+			unsigned int Timeout = 1000U;
+			do
+			{
+				Status = I2C1_ReadRegisterByte(DeviceAddress, BME280_STATUS);
+				Timeout--;
+			}
+			while((Status & BME280_STATUS_MEASURING) && Timeout);
+
+			if(Timeout == 0U)
+			{
+				USART2_WriteString("Temp measurement timed out\r\n");
+				return 0;
+			}
+
+			TempMSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_MSB);
+			TempLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_LSB);
+			TempXLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_XLSB);
+
+			//MSB[19:12] LSB[11:4] XLSB[3:0](bit 7, 6, 5, 4)
+			RawTemperature = (TempMSB << 12) | (TempLSB << 4) | (TempXLSB >> 4);
+
+			DigT1_LSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T1_LSB);
+			DigT1_MSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T1_MSB);
+			DigT2_LSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T2_LSB);
+			DigT2_MSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T2_MSB);
+			DigT3_LSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T3_LSB);
+			DigT3_MSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_DIG_T3_MSB);
+
+			DigT1 = (DigT1_MSB << 8) | DigT1_LSB;
+			DigT2 = (int16_t)((DigT2_MSB << 8) | DigT2_LSB);
+			DigT3 = (int16_t)((DigT3_MSB << 8) | DigT3_LSB);
+
+			*TemperatureCentiC = BME280_compensate_T_int32(RawTemperature, DigT1, DigT2, DigT3);
+
+			USART2_WriteString("Raw Temperature bytes 0x");
+			UART_WriteHexByte(TempMSB);
+			UART_WriteHexByte(TempLSB);
+			UART_WriteHexByte(TempXLSB);
+			USART2_WriteString("\r\n");
+
+			return 1;
+		}
+		else
+		{
+			USART2_WriteString("Temp measurement failed to start\r\n");
+		    return 0;
+		}
 }
 
 int main(void)
@@ -254,37 +358,19 @@ int main(void)
 	UART_WriteHexByte(ChipID);
 	USART2_WriteString("\r\n");
 
-	unsigned int Status;
-	unsigned int TempMSB;
-	unsigned int TempLSB;
-	unsigned int TempXLSB;
-	unsigned int RawTemperature;
+	int32_t TemperatureCentiC;
 
-	if(I2C1_WriteRegisterByte(DeviceAddress, BME280_CTRL_MEAS, BME280_FORCEDMODE_TEMPOVERSAMPLE1X))
+	if(BME280_ReadTemperatureCentiC(DeviceAddress, &TemperatureCentiC))
 	{
-		USART2_WriteString("Temp measurement started\r\n");
-		do
-		{
-			Status = I2C1_ReadRegisterByte(DeviceAddress, BME280_STATUS);
-
-		}
-		while(Status & BME280_STATUS_MEASURING);
-
-		TempMSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_MSB);
-		TempLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_LSB);
-		TempXLSB = I2C1_ReadRegisterByte(DeviceAddress, BME280_TEMP_XLSB);
-
-		//MSB[19:12] LSB[11:4] XLSB[3:0](bit 7, 6, 5, 4)
-		RawTemperature = (TempMSB << 12) | (TempLSB << 4) | (TempXLSB >> 4);
-
-		USART2_WriteString("Raw Temperature bytes 0x");
-		UART_WriteHexByte(TempMSB);
-		UART_WriteHexByte(TempLSB);
-		UART_WriteHexByte(TempXLSB);
-		USART2_WriteString("\r\n");
+		USART2_WriteString("Temperature: ");
+		UART_WriteSignedCentiCelsius(TemperatureCentiC);
+		USART2_WriteString(" C\r\n");
 	}
 	else
-		USART2_WriteString("Temp measurement failed to start\r\n");
+	{
+		USART2_WriteString("Failed to read temperature \r\n");
+	}
+
 
 	unsigned int ButtonLastChangeMs = 0;
 	unsigned int ButtonRawPrev = 0;
